@@ -1,0 +1,241 @@
+from pynq.pl import Overlay
+Overlay("pmod.bit").download()
+
+#per disegnare grafici
+%matplotlib inline
+#importo il fingerclip
+from pynq.pmods import Grove_FingerHR
+import time
+import matplotlib.pyplot as plt
+from IPython import display
+import numpy as np
+
+def dft (tacogramma):
+    res = [[],[]]
+    for k in range (0,len(tacogramma),1):
+        res[0].append(calculateRe(k,tacogramma))
+        res[1].append(calculateIm(k,tacogramma))
+    return res 
+
+def calculateRe (index,tacogramma):
+    res = 0 
+    for n in range (0,len(tacogramma) , 1 ) :
+        res += tacogramma[n] * np.cos ( 2 * np.pi * index * n / len (tacogramma) )
+    return res 
+
+def calculateIm (index,tacogramma):
+    res = 0
+    for n in range (0,len(tacogramma),1):
+        res -= tacogramma [n] * np.sin ( 2 * np.pi * index * n / len (tacogramma) )
+    return res
+
+def spectrum (coefficients):
+    res = []
+    for i in range ( 0 , len (coefficients [0] ) , 1 ):
+        res.append ( coefficients[0][i] * coefficients[0][i] + coefficients[1][i] * coefficients[1][i] )
+    return res 
+
+def retrieveData ( lowFrequency , highFrequency , frequencies , spectrumValues ) :
+    res = [ [] , [] ]
+    for i in range ( 0 , len (frequencies) , 1 ):
+        if ( frequencies[i] >= lowFrequency and frequencies[i] < highFrequency ) :
+            res[0].append(frequencies[i])
+            res[1].append(spectrumValues[i])
+    return res 
+
+def average (timeSeries):
+    res = 0
+    acc = 0
+    for i in range ( 0 , len(timeSeries) , 1 ):
+        acc += timeSeries[i]
+    res = acc / len(timeSeries)
+    return res 
+
+def variance ( timeSeries ):
+    averag = average(timeSeries)
+    acc = 0
+    for i in range ( 0 , len ( timeSeries ) ):
+        acc += (timeSeries[i]-averag) * (timeSeries[i]-averag)
+    return acc / len (timeSeries)
+
+def acquireNewTacogramma ():
+    tempo_acquisizione=0
+    b=0.2
+    freq=[]
+    tempi=[]
+    maxTime = 150
+
+    i = 0
+    while i < maxTime + b :
+        try:
+            #leggi il valore di frequenza
+            value = fingerHR.read()
+            #pulisci lo schermo da tutto
+            display.clear_output(wait=True)
+            # stampa il valore della mia frequenza cardiaca
+            print(str(value) + " heart beats per minute")
+            #quando il valore della frequenza è significativo parti a contare
+            if(value>0):
+                freq.append(value)
+                tempo_acquisizione+=b
+                tempi.append(tempo_acquisizione)
+                i += b
+            time.sleep(b) 
+        except KeyboardInterrupt: 
+            continue 
+            
+    x=[i for i in tempi]
+    y=[i for i in freq]
+    plt.plot(x,y, 'r-')
+    plt.ylabel('New Data - Hearth Rate Frequency')    
+    plt.show()
+    m=sum(y)/len(y)
+
+    dist=[(60/x)*1000 for x in freq] #distanza in ms
+    num_batt=(m/60)*(tempo_acquisizione-b)
+    return dist ;
+    
+def loadBaselineTacogramma ():
+    res = np.load('baseline.txt.npy')
+    return res 
+
+def extractFrequencies ( inputSpectrum , totSampTime ):
+    res = []
+    res.append(0)
+    for i in range ( 1 , len ( inputSpectrum ) , 1 ) :
+        res.append ( ( i - 1 ) / totSampTime ) 
+    return res ;
+    
+# initialize finger clip heart rate sensor on PMOD 1 (JB) and grove id 4 (GR4).
+# PMOD mapping is: PMOD 1 -> JB, PMOD 2 -> JC, PMOD 3 -> JD, PMOD 4 -> JE
+#dichiaro all'inizio la mia sorgente(1) è il numero del mio pmod
+#il secondo numero dovrebbe indicarmi in quale posizione dello sticked ho attaccato il sensore
+#siccome lo sticked non c'è si usa scrivere 4
+fingerHR = Grove_FingerHR(2, 4)
+
+# The real time acquired data
+newTacogramma = acquireNewTacogramma ()
+
+# The reference data
+baseLineTacogramma = loadBaselineTacogramma ()
+
+# The total number of sample we have in the new tacogramma
+totalSampleTimeNew = len(newTacogramma)
+
+# The total number of sample we have in the baseline tacogramma
+totalSampleTimeBase = len(baseLineTacogramma)
+
+# Fourier Transform of the current data tacogramma
+transformedNewTacogramma = dft (newTacogramma)
+
+# Fourier Transform of the baseline data tacogramma
+transformedBaselineTacogramma = dft(baseLineTacogramma)
+
+# The Fourier spectrum of the currently obtained data 
+newDataSpectrum = spectrum ( transformedNewTacogramma )
+
+# The Fourier spectrum of the baseline
+baseLineSpectrum = spectrum ( transformedBaselineTacogramma )
+
+# Frequencies of the new data
+newDataFrequencies = extractFrequencies ( newDataSpectrum , totalSampleTimeNew )
+
+# Frequencies of the baseline
+baselineFrequencies = extractFrequencies ( baseLineSpectrum , totalSampleTimeBase )
+
+# Interesting frequencies of the baseline
+vlfBaseline = retrieveData ( 0.01 , 0.04 , baselineFrequencies , baseLineSpectrum )
+lfBaseline = retrieveData ( 0.04 , 0.15 , baselineFrequencies , baseLineSpectrum )
+hfBaseline = retrieveData ( 0.15 , 0.4 , baselineFrequencies , baseLineSpectrum )
+
+# Interesting frequencies of the new data
+vlfNewData = retrieveData ( 0.01 , 0.04 , newDataFrequencies , newDataSpectrum )
+lfNewData = retrieveData ( 0.04 , 0.15 , newDataFrequencies , newDataSpectrum )
+hfNewData = retrieveData ( 0.15 , 0.4 , newDataFrequencies , newDataSpectrum )
+
+#risk coefficient
+n = 3
+
+# Variance of the baseline VLF
+baselineVarianceVLF = variance ( vlfBaseline[1] )
+
+# Variance of the baseline VF
+baselineVarianceLF = variance ( lfBaseline[1] )
+
+# Variance of the baseline HF
+baselineVarianceHF = variance ( hfBaseline[1] )
+    
+# Baseline average VLF
+averageBaselineVLF = average ( vlfBaseline[1] )
+
+# Baseline average LF
+averageBaselineLF = average ( lfBaseline[1] )
+
+# Baseline average HF
+averageBaselineHF = average ( hfBaseline[1] )
+    
+# New data average VLF
+averageNewDataVLF = average ( vlfNewData[1] )
+
+# New data average LF
+averageNewDataLF = average ( lfNewData[1] )
+
+# New data average HF
+averageNewDataHF = average ( hfNewData[1] )
+    
+# VLF ok
+absVLF = abs ( averageBaselineVLF - averageNewDataVLF ) 
+
+# LF ok
+absLF = abs ( averageBaselineLF - averageNewDataLF ) 
+    
+# VLF plot
+absHF = abs ( averageBaselineHF - averageNewDataHF )  
+    
+# Results
+
+print ( 'VLF Analysis (termoregulation, worries, rumination) \n')
+print ( 'n = 1 ---> ( |Sb - S| - 1 * sigma_b ^ 2 ) / |Sb - S| = '+ str ( ( absVLF - 1 * baselineVarianceVLF ) / absVLF ) + ', in range ? ' + str ( absVLF < 1 * baselineVarianceVLF ) )
+print ( 'n = 2 ---> ( |Sb - S| - 2 * sigma_b ^ 2 ) / |Sb - S|= ' + str ( ( absVLF - 2 * baselineVarianceVLF ) / absVLF ) + ', in range ? ' + str ( absVLF < 2 * baselineVarianceVLF ) )
+print ( 'n = 3 ---> ( |Sb - S| - 3 * sigma_b ^ 2 ) / |Sb - S|= ' + str ( ( absVLF - 3 * baselineVarianceVLF ) / absVLF ) + ', in range ? ' + str ( absVLF < 3 * baselineVarianceVLF ) )
+
+print ( 'LF Analysis (pressure) ?\n')
+print ( 'n = 1 ---> ( |Sb - S| - 1 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absLF - 1 * baselineVarianceLF ) / absLF ) + ', in range ? ' + str ( absLF < 1 * baselineVarianceLF ) )
+print ( 'n = 2 ---> ( |Sb - S| - 2 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absLF - 2 * baselineVarianceLF ) / absLF ) + ', in range ? ' + str ( absLF < 2 * baselineVarianceLF ) )
+print ( 'n = 3 ---> ( |Sb - S| - 3 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absLF - 3 * baselineVarianceLF ) / absLF ) + ', in range ? ' + str ( absLF < 3 * baselineVarianceLF ) )
+
+print ( 'HF Analysis (breathing) ?\n')
+print ( 'n = 1 ---> ( |Sb - S| - 1 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absHF - 1 * baselineVarianceHF ) / absLF ) + ', in range ? ' + str ( absHF < 1 * baselineVarianceHF ) )
+print ( 'n = 2 ---> ( |Sb - S| - 2 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absHF - 2 * baselineVarianceHF ) / absLF ) + ', in range ? ' + str ( absHF < 2 * baselineVarianceHF ) )
+print ( 'n = 3 ---> ( |Sb - S| - 3 * sigma_b ^ 2 ) = / |Sb - S|' + str ( ( absHF - 3 * baselineVarianceHF ) / absLF ) + ', in range ? ' + str ( absHF < 3 * baselineVarianceHF ) )
+
+    
+plt.figure(1)
+plt.plot(vlfBaseline[0], vlfBaseline[1], 'r-')
+plt.ylabel('VLF Baseline')    
+
+plt.figure(2)
+plt.plot(vlfNewData[0], vlfNewData[1], 'r-')
+plt.ylabel('VLF Current Data')    
+
+# LF plot
+
+plt.figure(3)
+plt.plot(lfBaseline[0],lfBaseline[1], 'r-')
+plt.ylabel('LF Baseline')
+
+plt.figure(4)
+plt.plot(lfNewData[0],lfNewData[1],'r-')
+plt.ylabel('LF Current Data')
+
+# HF plot
+
+plt.figure(5)
+plt.plot(hfBaseline[0],hfBaseline[1], 'r-')
+plt.ylabel('HF Baseline')
+
+plt.figure(6)
+plt.plot(hfNewData[0],hfNewData[1],'r-')
+plt.ylabel('HF Current Data')
+
+plt.show()
